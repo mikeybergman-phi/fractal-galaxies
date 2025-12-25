@@ -1,0 +1,739 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Ratio Spiral Growth · Faster Render</title>
+<style>
+html,body{margin:0;height:100%;background:#0b1020;color:#e8eefc;font-family:system-ui,Segoe UI,Roboto,sans-serif;overflow:hidden}
+canvas{display:block}
+#ui{
+  position:fixed;left:14px;top:14px;width:660px;
+  background:rgba(20,24,40,.82);border:1px solid rgba(255,255,255,.12);
+  border-radius:14px;padding:12px;box-shadow:0 10px 30px rgba(0,0,0,.35);
+  backdrop-filter:blur(8px);user-select:none;
+  transition:transform .2s ease, opacity .2s ease;
+}
+#ui.minimized{transform:translateX(-105%);opacity:0;pointer-events:none;}
+#ui h3{margin:0 0 8px;font-size:14px;font-weight:650}
+.row{display:flex;gap:10px;align-items:center;margin:8px 0}
+.row label{flex:1;font-size:12px;opacity:.9}
+.row input,.row select{flex:1.4}
+.row .inline{display:flex;align-items:center;gap:8px;flex:1.4}
+.btnrow{display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap}
+button{
+  appearance:none;border:1px solid rgba(255,255,255,.14);
+  background:rgba(255,255,255,.08);color:#e8eefc;
+  border-radius:12px;padding:8px 10px;cursor:pointer;
+  font-size:12px;font-weight:650
+}
+button:hover{background:rgba(255,255,255,.12)}
+button:active{transform:translateY(1px)}
+button:disabled{opacity:.55;cursor:not-allowed}
+.hint{font-size:11px;opacity:.75;line-height:1.25;margin-top:8px}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.10)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="ui">
+  <h3>Ratio spiral growth</h3>
+
+  <div class="row">
+    <label>Mode</label>
+    <select id="mode">
+      <option value="silver">Silver: 90° · δ spiral · δ⁻¹ iter · 8 arms</option>
+      <option value="phi72">Phi: 72° · spiral φ⁻¹ · iter φ⁻¹ · 5 arms</option>
+      <option value="phi72_s1_i2">Phi: 72° · spiral φ⁻¹ · iter φ⁻² · 5 arms</option>
+      <option value="phi90_4">Phi: 90° · spiral φ⁻¹ · iter φ⁻¹ · 4 arms</option>
+      <option value="half90_4">Half: 90° · spiral (1/2) · iter (1/2) · 4 arms</option>
+      <option value="phi72_10_i3">Phi: 72° · spiral φ⁻¹ · iter φ⁻³ · 10 arms</option>
+      <option value="rat60_23_13">60° · spiral (2/3) · iter (1/3) · 6 arms</option>
+      <option value="plastic60_3">Plastic: 60° · spiral ρ⁻¹ · iter ρ⁻¹ · 3 arms</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label>Iterations</label>
+    <input id="iters" type="range" min="0" max="8" step="1" value="2">
+  </div>
+
+  <div class="row">
+    <label>Line width</label>
+    <input id="lw" type="range" min="0.4" max="4" step="0.1" value="1.6">
+  </div>
+
+  <div class="row">
+    <label>Color mode</label>
+    <select id="colorMode">
+      <option value="classic" selected>Classic</option>
+      <option value="rainbowPath">Rainbow (full spectrum along path)</option>
+      <option value="rainbowOrder">Rainbow (global creation order)</option>
+      <option value="rainbowGalaxyIter">Rainbow (each galaxy full spectrum; per-iteration shifted)</option>
+    </select>
+  </div>
+
+  <div class="row">
+    <label>Reverse spectrum</label>
+    <div class="inline">
+      <input id="rev" type="checkbox" />
+      <small>flip red ↔ violet</small>
+    </div>
+  </div>
+
+  <div class="row">
+    <label>Brightness</label>
+    <input id="bright" type="range" min="0.15" max="2.5" step="0.01" value="1.00">
+  </div>
+
+  <div class="row">
+    <label>Quality</label>
+    <select id="quality">
+      <option value="low">Low (fastest)</option>
+      <option value="med" selected>Medium</option>
+      <option value="high">High (prettier)</option>
+    </select>
+  </div>
+
+  <div class="btnrow">
+    <button id="saveBtn">Save PNG</button>
+    <button id="fitBtn">Fit to Screen</button>
+    <button id="vidBtn">Save Video (build)</button>
+  </div>
+
+  <div class="hint">
+    <span class="pill">Wheel</span> zoom • <span class="pill">Drag</span> pan • <span class="pill">M</span> toggle menu<br>
+    🌈 “Galaxy full spectrum” means every node paints a full rainbow, but each iteration starts on a different hue.
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha: false });
+
+  const PHI   = (1 + Math.sqrt(5)) / 2;
+  const DELTA = 1 + Math.SQRT2;
+  const PLASTIC = 1.3247179572447458;
+
+  const uiEl = document.getElementById('ui');
+  const modeEl = document.getElementById('mode');
+  const itersEl = document.getElementById('iters');
+  const lwEl = document.getElementById('lw');
+  const colorModeEl = document.getElementById('colorMode');
+  const revEl = document.getElementById('rev');
+  const brightEl = document.getElementById('bright');
+  const qualityEl = document.getElementById('quality');
+  const saveBtn = document.getElementById('saveBtn');
+  const fitBtn = document.getElementById('fitBtn');
+  const vidBtn = document.getElementById('vidBtn');
+
+  let scale = 1.35, panX = 0, panY = 0;
+  let dragging = false, lastX = 0, lastY = 0;
+
+  let needsNewRender = true;
+  let renderToken = 0;
+
+  const baseCache = new Map();
+  const BASE_R0 = 18;
+
+  let lastBBox = null;
+
+  // build-video state
+  let buildActive = false;
+  let recorder = null;
+  let recordedChunks = [];
+
+  // Toggle menu with "M"
+  let menuMinimized = false;
+  window.addEventListener('keydown', e => {
+    if (e.key === 'm' || e.key === 'M') {
+      menuMinimized = !menuMinimized;
+      uiEl.classList.toggle('minimized', menuMinimized);
+    }
+  });
+
+  function resize(){
+    const dpr = devicePixelRatio || 1;
+    canvas.width = Math.floor(innerWidth * dpr);
+    canvas.height = Math.floor(innerHeight * dpr);
+    canvas.style.width = innerWidth + 'px';
+    canvas.style.height = innerHeight + 'px';
+    if (!panX && !panY) { panX = innerWidth/2; panY = innerHeight/2; }
+    scheduleRender();
+  }
+  addEventListener('resize', resize);
+
+  function screenToWorld(x,y){ return [(x-panX)/scale, (y-panY)/scale]; }
+
+  canvas.addEventListener('wheel', e => {
+    if (buildActive) return;
+    e.preventDefault();
+    const [wx, wy] = screenToWorld(e.clientX, e.clientY);
+    scale = Math.min(350, Math.max(0.0015, scale * Math.pow(1.002, -e.deltaY)));
+    panX = e.clientX - wx*scale;
+    panY = e.clientY - wy*scale;
+    scheduleRender();
+  }, { passive:false });
+
+  canvas.addEventListener('pointerdown', e => {
+    if (buildActive) return;
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!dragging || buildActive) return;
+    panX += e.clientX - lastX;
+    panY += e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+    scheduleRender();
+  });
+  canvas.addEventListener('pointerup', ()=> dragging=false);
+  canvas.addEventListener('pointercancel', ()=> dragging=false);
+
+  function clear(){
+    const dpr = devicePixelRatio || 1;
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.fillStyle = '#0b1020';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+
+  function rOfTheta(t, r0, segAngle, ratio){
+    return r0 * Math.exp(Math.log(ratio) * (t / segAngle));
+  }
+
+  function endpointLocal(N, k, endTheta, rEnd, rotOffset){
+    const ang = endTheta + rotOffset + k * (2*Math.PI/N);
+    return [rEnd*Math.cos(ang), rEnd*Math.sin(ang)];
+  }
+
+  function getParams(){
+    const mode = modeEl.value;
+
+    let N, segAngle, spiralRatio, segCount, totalTheta, childScale;
+
+    if (mode === 'silver'){
+      N = 8; segAngle = Math.PI/2; spiralRatio = DELTA; segCount = 8;
+      totalTheta = segCount * segAngle; childScale = 1/DELTA;
+
+    } else if (mode === 'phi72'){
+      N = 5; segAngle = 2*Math.PI/5; spiralRatio = 1/PHI; segCount = 7;
+      totalTheta = -segCount * segAngle; childScale = 1/PHI;
+
+    } else if (mode === 'phi72_s1_i2'){
+      N = 5; segAngle = 2*Math.PI/5; spiralRatio = 1/PHI; segCount = 7;
+      totalTheta = -segCount * segAngle; childScale = 1/(PHI*PHI);
+
+    } else if (mode === 'phi90_4'){
+      N = 4; segAngle = Math.PI/2; spiralRatio = 1/PHI; segCount = 10;
+      totalTheta = -segCount * segAngle; childScale = 1/PHI;
+
+    } else if (mode === 'half90_4'){
+      // ✅ new preset: 90° arcs, spiral ratio 1/2, iterations ratio 1/2, 4 arms
+      N = 4; segAngle = Math.PI/2; spiralRatio = 0.5; segCount = 10;
+      totalTheta = -segCount * segAngle; childScale = 0.5;
+
+    } else if (mode === 'phi72_10_i3'){
+      N = 10; segAngle = 2*Math.PI/5; spiralRatio = 1/PHI; segCount = 7;
+      totalTheta = -segCount * segAngle; childScale = 1/(PHI*PHI*PHI);
+
+    } else if (mode === 'rat60_23_13'){
+      N = 6; segAngle = Math.PI/3; spiralRatio = 2/3; segCount = 9;
+      totalTheta = -segCount * segAngle; childScale = 1/3;
+
+    } else { // plastic60_3
+      N = 3; segAngle = Math.PI/3; spiralRatio = 1/PLASTIC; segCount = 11;
+      totalTheta = -segCount * segAngle; childScale = 1/PLASTIC;
+    }
+
+    // Auto-level for N=5
+    let rotOffset = 0;
+    if (N === 5) {
+      const endTheta = totalTheta;
+      const rEnd1 = Math.exp(Math.log(spiralRatio) * (endTheta / segAngle));
+      const angA = endTheta + 0*(2*Math.PI/N);
+      const angB = endTheta + 1*(2*Math.PI/N);
+      const ax = rEnd1 * Math.cos(angA), ay = rEnd1 * Math.sin(angA);
+      const bx = rEnd1 * Math.cos(angB), by = rEnd1 * Math.sin(angB);
+      const s = childScale;
+      const f = (1 - s*s);
+      rotOffset = -Math.atan2((f*by) - (f*ay), (f*bx) - (f*ax));
+    } else if (N === 10) {
+      rotOffset = -Math.PI / N;
+    } else if (N === 3) {
+      rotOffset = -Math.PI/6;
+    }
+
+    const quality = qualityEl.value;
+    const basePtsPerSeg = (quality === 'low') ? 55 : (quality === 'high' ? 140 : 95);
+
+    return { mode, N, segAngle, spiralRatio, segCount, totalTheta, childScale, rotOffset, basePtsPerSeg };
+  }
+
+  function getBasePolylines(params){
+    const { mode, N, segAngle, spiralRatio, segCount, totalTheta, rotOffset, basePtsPerSeg } = params;
+    const key = `${mode}|N${N}|off${rotOffset.toFixed(6)}|A${segAngle.toFixed(6)}|R${spiralRatio.toFixed(12)}|S${segCount}|T${totalTheta.toFixed(6)}|Q${basePtsPerSeg}`;
+    const cached = baseCache.get(key);
+    if (cached) return cached;
+
+    const steps = Math.max(120, Math.floor((Math.abs(totalTheta)/segAngle) * basePtsPerSeg));
+    const arms = [];
+
+    for (let k=0;k<N;k++){
+      const rot = rotOffset + k*(2*Math.PI/N);
+      const arr = new Float32Array((steps+1)*2);
+      for (let i=0;i<=steps;i++){
+        const t = (i/steps) * totalTheta;
+        const theta = t + rot;
+        const r = rOfTheta(t, 1, segAngle, spiralRatio);
+        arr[i*2]   = r * Math.cos(theta);
+        arr[i*2+1] = r * Math.sin(theta);
+      }
+      arms.push(arr);
+    }
+
+    const out = { arms, steps, key };
+    baseCache.set(key, out);
+    return out;
+  }
+
+  function clamp01(x){ return Math.max(0, Math.min(1, x)); }
+  function colorClassic(alpha){ return `rgba(180,210,255,${alpha})`; }
+  function colorRainbow(u, alpha, brightness, reversed){
+    u = u - Math.floor(u);
+    if (reversed) u = 1 - u;
+    const hue = 360 * u;
+    const L = Math.max(30, Math.min(78, 62 + (brightness - 1) * 10));
+    return `hsla(${hue.toFixed(2)}, 95%, ${L.toFixed(1)}%, ${alpha})`;
+  }
+
+  function bboxInit(){ return { minX:+Infinity, minY:+Infinity, maxX:-Infinity, maxY:-Infinity }; }
+  function bboxExpand(b, x, y){
+    if (x < b.minX) b.minX = x;
+    if (y < b.minY) b.minY = y;
+    if (x > b.maxX) b.maxX = x;
+    if (y > b.maxY) b.maxY = y;
+  }
+
+  function nodeCountTotal(N, depthMax){
+    if (depthMax <= 0) return 1;
+    if (N === 1) return depthMax + 1;
+    return (Math.pow(N, depthMax + 1) - 1) / (N - 1);
+  }
+
+  // FAST rainbow: one stroke per arm using CanvasGradient (few stops)
+  function strokePolylineFast(polyXY, r0, node, dep, depthMax, baseAlpha, colorMode, brightness, reversed, bbox, hueCtx){
+    const { a,b,c,d, cx,cy } = node;
+    const alpha = clamp01(baseAlpha * brightness);
+
+    const pts = polyXY.length/2;
+
+    const x0w = (a*(polyXY[0]*r0) + b*(polyXY[1]*r0) + cx);
+    const y0w = (c*(polyXY[0]*r0) + d*(polyXY[1]*r0) + cy);
+    const x1w = (a*(polyXY[(pts-1)*2]*r0) + b*(polyXY[(pts-1)*2+1]*r0) + cx);
+    const y1w = (c*(polyXY[(pts-1)*2]*r0) + d*(polyXY[(pts-1)*2+1]*r0) + cy);
+
+    const sx0 = x0w*scale + panX, sy0 = y0w*scale + panY;
+    const sx1 = x1w*scale + panX, sy1 = y1w*scale + panY;
+
+    let strokeStyle = null;
+
+    if (colorMode === 'classic') {
+      strokeStyle = colorClassic(alpha);
+    } else {
+      const stops = (qualityEl.value === 'low') ? 5 : (qualityEl.value === 'high' ? 13 : 9);
+      const grad = ctx.createLinearGradient(sx0, sy0, sx1, sy1);
+
+      // iteration shift for "galaxy" mode:
+      // each node gets full spectrum along the arm, but offset depends on depth and node index,
+      // so iteration 0 starts at one hue, iteration 1 starts elsewhere, etc.
+      const iterShift = (depthMax <= 0) ? 0 : (dep / (depthMax + 1));
+      const nodeShift = (hueCtx.nodesTotal <= 0) ? 0 : (hueCtx.nodeIndex / hueCtx.nodesTotal) * 0.12; // subtle drift
+      const baseShift = (iterShift + nodeShift) % 1;
+
+      for (let i=0;i<stops;i++){
+        const t = (stops === 1) ? 0 : i/(stops-1);
+
+        let u;
+        if (colorMode === 'rainbowPath') {
+          u = (dep + t) / (Math.max(1, depthMax) + 1);
+        } else if (colorMode === 'rainbowOrder') {
+          const { nodeIndex, nodesTotal, armIndex, N } = hueCtx;
+          const micro = (armIndex + t) / Math.max(1, N);
+          u = (nodeIndex + micro) / Math.max(1e-9, nodesTotal);
+        } else {
+          // ✅ NEW: rainbowGalaxyIter
+          // full spectrum per galaxy (t runs 0..1), iteration decides the starting hue
+          u = (t + baseShift);
+        }
+
+        grad.addColorStop(t, colorRainbow(u, alpha, brightness, reversed));
+      }
+      strokeStyle = grad;
+    }
+
+    ctx.strokeStyle = strokeStyle;
+    ctx.beginPath();
+    for (let i=0;i<polyXY.length;i+=2){
+      const x0 = polyXY[i]*r0, y0 = polyXY[i+1]*r0;
+      const x = a*x0 + b*y0 + cx;
+      const y = c*x0 + d*y0 + cy;
+      const sx = x*scale + panX, sy = y*scale + panY;
+      if (i===0) ctx.moveTo(sx,sy); else ctx.lineTo(sx,sy);
+      if (bbox) bboxExpand(bbox, x, y);
+    }
+    ctx.stroke();
+  }
+
+  function computeBBox(params, depthMax){
+    const r0 = BASE_R0;
+    const base = getBasePolylines(params);
+    const { N, segAngle, spiralRatio, totalTheta, childScale, rotOffset } = params;
+
+    const endTheta = totalTheta;
+    const rEnd1 = rOfTheta(endTheta, 1, segAngle, spiralRatio);
+
+    const bbox = bboxInit();
+    const stack = [{ a:1,b:0,c:0,d:1, cx:0,cy:0, depth:0 }];
+
+    while (stack.length){
+      const node = stack.pop();
+
+      for (let k=0;k<N;k++){
+        const poly = base.arms[k];
+        const step = Math.max(3, Math.floor((poly.length/2) / 240));
+        for (let i=0; i<poly.length; i+=2*step){
+          const x0 = poly[i]*r0, y0 = poly[i+1]*r0;
+          bboxExpand(bbox,
+            node.a*x0 + node.b*y0 + node.cx,
+            node.c*x0 + node.d*y0 + node.cy
+          );
+        }
+      }
+
+      if (node.depth < depthMax){
+        const s = childScale, negs = -s;
+        for (let k=0;k<N;k++){
+          const [ax1, ay1] = endpointLocal(N, k, endTheta, rEnd1, rotOffset);
+          const Ax0 = ax1 * r0, Ay0 = ay1 * r0;
+
+          const Ax = node.a*Ax0 + node.b*Ay0 + node.cx;
+          const Ay = node.c*Ax0 + node.d*Ay0 + node.cy;
+
+          const a2 = negs * node.a, b2 = negs * node.b;
+          const c2 = negs * node.c, d2 = negs * node.d;
+
+          const cx2 = negs * node.cx + (1 + s) * Ax;
+          const cy2 = negs * node.cy + (1 + s) * Ay;
+
+          stack.push({ a:a2,b:b2,c:c2,d:d2, cx:cx2,cy:cy2, depth: node.depth+1 });
+        }
+      }
+    }
+    return bbox;
+  }
+
+  function fitToBBox(b){
+    const W = innerWidth, H = innerHeight;
+    const boxH = Math.max(1e-9, b.maxY - b.minY);
+    const margin = 0.98;
+    const newScale = (H * margin) / boxH;
+
+    scale = Math.min(350, Math.max(0.0015, newScale));
+
+    const cx = (b.minX + b.maxX) / 2;
+    const cy = (b.minY + b.maxY) / 2;
+
+    panX = W/2 - cx * scale;
+    panY = H/2 - cy * scale;
+  }
+
+  function scheduleRender(){
+    if (buildActive) return;
+    needsNewRender = true;
+    requestAnimationFrame(renderFrame);
+  }
+
+  function renderFrame(){
+    if (!needsNewRender || buildActive) return;
+    needsNewRender = false;
+
+    const token = ++renderToken;
+
+    clear();
+    ctx.lineWidth = +lwEl.value;
+    ctx.lineCap = ctx.lineJoin = 'round';
+
+    const depthUI = +itersEl.value;
+    const colorMode = colorModeEl.value;
+    const brightness = +brightEl.value;
+    const reversed = !!revEl.checked;
+
+    const params = getParams();
+    const maxDepthPractical =
+      (params.mode === 'phi72_10_i3') ? 6 :
+      (params.mode === 'phi72_s1_i2') ? 7 :
+      8;
+    const depthMax = Math.min(depthUI, maxDepthPractical);
+
+    const base = getBasePolylines(params);
+    const { N, segAngle, spiralRatio, totalTheta, childScale, rotOffset } = params;
+
+    const endTheta = totalTheta;
+    const rEnd1 = rOfTheta(endTheta, 1, segAngle, spiralRatio);
+
+    const budgetNodesPerFrame =
+      (qualityEl.value === 'low') ? 40 :
+      (qualityEl.value === 'high') ? 14 :
+      24;
+
+    const useQueue = (colorMode === 'rainbowOrder');
+
+    const work = [{ a:1,b:0,c:0,d:1, cx:0,cy:0, depth:0 }];
+    let qHead = 0;
+
+    const bbox = bboxInit();
+    const nodesTotal = nodeCountTotal(N, depthMax);
+    let nodeIndex = 0;
+
+    function hasWork(){ return useQueue ? (qHead < work.length) : work.length > 0; }
+    function popNode(){ return useQueue ? work[qHead++] : work.pop(); }
+    function pushNode(n){ work.push(n); }
+
+    function step(){
+      if (token !== renderToken) return;
+
+      let n = 0;
+      while (hasWork() && n < budgetNodesPerFrame){
+        const node = popNode();
+        const dep = node.depth;
+
+        const baseAlpha = Math.max(0.02, 0.22 * Math.pow(0.72, dep));
+
+        for (let k=0;k<N;k++){
+          strokePolylineFast(
+            base.arms[k],
+            BASE_R0,
+            node,
+            dep,
+            depthMax,
+            baseAlpha,
+            colorMode,
+            brightness,
+            reversed,
+            bbox,
+            { nodeIndex, nodesTotal, armIndex:k, N }
+          );
+        }
+
+        if (dep < depthMax){
+          const s = childScale, negs = -s;
+          for (let k=0;k<N;k++){
+            const [ax1, ay1] = endpointLocal(N, k, endTheta, rEnd1, rotOffset);
+            const Ax0 = ax1 * BASE_R0, Ay0 = ay1 * BASE_R0;
+
+            const Ax = node.a*Ax0 + node.b*Ay0 + node.cx;
+            const Ay = node.c*Ax0 + node.d*Ay0 + node.cy;
+
+            const a2 = negs * node.a, b2 = negs * node.b;
+            const c2 = negs * node.c, d2 = negs * node.d;
+
+            const cx2 = negs * node.cx + (1 + s) * Ax;
+            const cy2 = negs * node.cy + (1 + s) * Ay;
+
+            pushNode({ a:a2,b:b2,c:c2,d:d2, cx:cx2,cy:cy2, depth: dep+1 });
+          }
+        }
+
+        nodeIndex++;
+        n++;
+      }
+
+      if (hasWork()) requestAnimationFrame(step);
+      else if (bbox.minX !== Infinity) lastBBox = bbox;
+    }
+
+    requestAnimationFrame(step);
+  }
+
+  function fitToScreen(){
+    if (!lastBBox) return;
+    fitToBBox(lastBBox);
+    scheduleRender();
+  }
+
+  function savePNG(){
+    const stamp = new Date().toISOString().replace(/[:.]/g,'-');
+    const a = document.createElement('a');
+    a.download = `ratio-spiral-${modeEl.value}-iter-${itersEl.value}-${stamp}.png`;
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+  }
+
+  async function saveBuildVideo(){
+    if (buildActive) return;
+
+    buildActive = true;
+    vidBtn.disabled = true;
+    saveBtn.disabled = true;
+    fitBtn.disabled = true;
+
+    const depthUI = +itersEl.value;
+    const colorMode = colorModeEl.value;
+    const brightness = +brightEl.value;
+    const reversed = !!revEl.checked;
+
+    const params = getParams();
+    const maxDepthPractical =
+      (params.mode === 'phi72_10_i3') ? 6 :
+      (params.mode === 'phi72_s1_i2') ? 7 :
+      8;
+    const depthMax = Math.min(depthUI, maxDepthPractical);
+
+    const bboxFinal = computeBBox(params, depthMax);
+    lastBBox = bboxFinal;
+    fitToBBox(bboxFinal);
+
+    clear();
+    ctx.lineWidth = +lwEl.value;
+    ctx.lineCap = ctx.lineJoin = 'round';
+
+    const base = getBasePolylines(params);
+    const { N, segAngle, spiralRatio, totalTheta, childScale, rotOffset } = params;
+    const endTheta = totalTheta;
+    const rEnd1 = rOfTheta(endTheta, 1, segAngle, spiralRatio);
+
+    recordedChunks = [];
+    const stream = canvas.captureStream(60);
+
+    let mime = '';
+    if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) mime = 'video/webm;codecs=vp9';
+    else if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) mime = 'video/webm;codecs=vp8';
+    else mime = 'video/webm';
+
+    recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 8_000_000 });
+    recorder.ondataavailable = e => { if (e.data && e.data.size) recordedChunks.push(e.data); };
+
+    const stamp = new Date().toISOString().replace(/[:.]/g,'-');
+    const filename = `ratio-spiral-build-${modeEl.value}-iter-${depthMax}-${stamp}.webm`;
+
+    const done = new Promise(resolve => {
+      recorder.onstop = () => {
+        const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        resolve();
+      };
+    });
+
+    recorder.start(250);
+
+    const useQueue = (colorMode === 'rainbowOrder');
+    const work = [{ a:1,b:0,c:0,d:1, cx:0,cy:0, depth:0 }];
+    let qHead = 0;
+
+    const nodesTotal = nodeCountTotal(N, depthMax);
+    let nodeIndex = 0;
+
+    const budgetNodesPerFrame =
+      (qualityEl.value === 'low') ? 26 :
+      (qualityEl.value === 'high') ? 10 :
+      18;
+
+    function hasWork(){ return useQueue ? (qHead < work.length) : work.length > 0; }
+    function popNode(){ return useQueue ? work[qHead++] : work.pop(); }
+    function pushNode(n){ work.push(n); }
+
+    function buildStep(){
+      let n = 0;
+      while (hasWork() && n < budgetNodesPerFrame){
+        const node = popNode();
+        const dep = node.depth;
+
+        const baseAlpha = Math.max(0.02, 0.22 * Math.pow(0.72, dep));
+        for (let k=0;k<N;k++){
+          strokePolylineFast(
+            base.arms[k],
+            BASE_R0,
+            node,
+            dep,
+            depthMax,
+            baseAlpha,
+            colorMode,
+            brightness,
+            reversed,
+            null,
+            { nodeIndex, nodesTotal, armIndex:k, N }
+          );
+        }
+
+        if (dep < depthMax){
+          const s = childScale, negs = -s;
+          for (let k=0;k<N;k++){
+            const [ax1, ay1] = endpointLocal(N, k, endTheta, rEnd1, rotOffset);
+            const Ax0 = ax1 * BASE_R0, Ay0 = ay1 * BASE_R0;
+
+            const Ax = node.a*Ax0 + node.b*Ay0 + node.cx;
+            const Ay = node.c*Ax0 + node.d*Ay0 + node.cy;
+
+            const a2 = negs * node.a, b2 = negs * node.b;
+            const c2 = negs * node.c, d2 = negs * node.d;
+
+            const cx2 = negs * node.cx + (1 + s) * Ax;
+            const cy2 = negs * node.cy + (1 + s) * Ay;
+
+            pushNode({ a:a2,b:b2,c:c2,d:d2, cx:cx2,cy:cy2, depth: dep+1 });
+          }
+        }
+
+        nodeIndex++;
+        n++;
+      }
+
+      if (hasWork()) requestAnimationFrame(buildStep);
+      else setTimeout(() => recorder.stop(), 350);
+    }
+
+    requestAnimationFrame(buildStep);
+    await done;
+
+    recorder = null;
+    recordedChunks = [];
+    buildActive = false;
+
+    vidBtn.disabled = false;
+    saveBtn.disabled = false;
+    fitBtn.disabled = false;
+
+    scheduleRender();
+  }
+
+  // UI wiring
+  const onAnyChange = () => scheduleRender();
+  modeEl.addEventListener('change', () => {
+    if (modeEl.value !== 'silver' && +itersEl.value > 7) itersEl.value = 7;
+    scheduleRender();
+  });
+  itersEl.addEventListener('input', onAnyChange);
+  lwEl.addEventListener('input', onAnyChange);
+  colorModeEl.addEventListener('change', onAnyChange);
+  revEl.addEventListener('change', onAnyChange);
+  brightEl.addEventListener('input', onAnyChange);
+  qualityEl.addEventListener('change', onAnyChange);
+
+  saveBtn.addEventListener('click', savePNG);
+  fitBtn.addEventListener('click', fitToScreen);
+  vidBtn.addEventListener('click', saveBuildVideo);
+
+  resize();
+  scheduleRender();
+})();
+</script>
+</body>
+</html>
